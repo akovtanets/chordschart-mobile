@@ -1,4 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router'; // ДОДАНО: Імпорт роутера для навігації
 import { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { supabase } from '../../lib/supabase';
@@ -16,7 +17,7 @@ export default function SongsScreen() {
     try {
       setLoading(true);
       const { data, error } = await supabase
-        .from('songs') // Перевірте назву таблиці в Supabase
+        .from('songs') 
         .select('*')
         .order('title', { ascending: true });
 
@@ -31,7 +32,7 @@ export default function SongsScreen() {
 
   const filteredSongs = songs.filter(song => 
     song.title.toLowerCase().includes(search.toLowerCase()) || 
-    song.artist?.toLowerCase().includes(search.toLowerCase())
+    (song.author || song.artist)?.toLowerCase().includes(search.toLowerCase())
   );
 
   return (
@@ -53,15 +54,20 @@ export default function SongsScreen() {
       ) : (
         <FlatList
           data={filteredSongs}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item) => item.id.toString()} // Надійніше перетворювати в рядок
           renderItem={({ item }) => (
-            <TouchableOpacity className="bg-zinc-800 p-4 rounded-xl mb-3 border border-zinc-700 flex-row justify-between items-center">
-              <View>
-                <Text className="text-white text-lg font-semibold">{item.title}</Text>
-                <Text className="text-zinc-500 text-sm">{item.artist || 'Автор невідомий'}</Text>
+            <TouchableOpacity 
+              // ДОДАНО: Перехід на сторінку пісні з передачею source: 'tab'
+              onPress={() => router.push({ pathname: '/song-view', params: { id: item.id, source: 'tab' } } as any)}
+              className="bg-zinc-800 p-4 rounded-xl mb-3 border border-zinc-700 flex-row justify-between items-center"
+            >
+              <View className="flex-1 mr-4">
+                <Text className="text-white text-lg font-semibold" numberOfLines={1}>{item.title}</Text>
+                {/* Використовуємо author, як у базі, або artist як фолбек */}
+                <Text className="text-zinc-500 text-sm" numberOfLines={1}>{item.author || item.artist || 'Автор невідомий'}</Text>
               </View>
               <View className="bg-zinc-700 px-2 py-1 rounded">
-                <Text className="text-[#0090ff] font-bold">{item.key || 'C'}</Text>
+                <Text className="text-[#0090ff] font-bold">{item.default_key || item.key || 'C'}</Text>
               </View>
             </TouchableOpacity>
           )}

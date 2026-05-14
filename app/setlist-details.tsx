@@ -118,7 +118,7 @@ export default function SetlistDetailsScreen() {
         
         <View className="flex-row items-center">
           <TouchableOpacity 
-            onPress={() => router.push({ pathname: '/song-view', params: { id: item.id } } as any)}
+            onPress={() => router.push({ pathname: '/song-view', params: { id: item.id, source: 'setlist' } } as any)}
             className="flex-1 mr-4"
           >
             <Text className={`text-xl font-black uppercase italic tracking-tighter leading-tight ${isCurrentActive ? 'text-blue-400' : 'text-white'}`}>
