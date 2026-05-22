@@ -40,6 +40,7 @@ export default function SongViewScreen() {
   const scrollY = useRef(0);
   const autoScrollInterval = useRef<NodeJS.Timeout | null>(null);
   const playerRef = useRef<any>(null);
+  const isUserScrolling = useRef(false); // ДОДАНО: Слідкує, чи користувач зараз гортає пальцем
 
   useEffect(() => {
     if (id) fetchSong();
@@ -67,7 +68,6 @@ export default function SongViewScreen() {
   async function fetchSong() {
     try {
       setLoading(true);
-      // ВИПРАВЛЕНО: додано назву колонки 'id'
       const { data, error } = await supabase.from('songs').select('*').eq('id', id).single();
       if (error) throw error;
       setSong(data);
@@ -83,16 +83,23 @@ export default function SongViewScreen() {
     setIsSettingsOpen(!isSettingsOpen);
   };
 
+  // --- ЛОГІКА РОЗУМНОГО АВТОСКРОЛУ (Прискорено на 35% + Без зупинки при торканні) ---
   const toggleAutoScroll = () => {
     if (isAutoScrolling) {
       stopAutoScroll();
     } else {
       setIsAutoScrolling(true);
+      
       const bpm = song?.bpm ? parseInt(song.bpm) : 120;
-      const intervalMs = Math.max(20, (60000 / (bpm * 13.5))); 
+      
+      const intervalMs = Math.max(12, (60000 / (bpm * 30.3))); 
+
       autoScrollInterval.current = setInterval(() => {
-        scrollY.current += 0.5;
-        scrollViewRef.current?.scrollTo({ y: scrollY.current, animated: false });
+        // ДОДАНО: Скролимо тільки якщо користувач зараз не тримає палець на екрані
+        if (!isUserScrolling.current) {
+          scrollY.current += 0.5; 
+          scrollViewRef.current?.scrollTo({ y: scrollY.current, animated: false });
+        }
       }, intervalMs);
     }
   };
@@ -158,7 +165,6 @@ export default function SongViewScreen() {
     );
   };
 
-  // Перевірка завантаження перенесена вище основного рендеру
   if (loading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#09090b' }}>
@@ -245,7 +251,22 @@ export default function SongViewScreen() {
         </View>
       )}
 
-      <ScrollView ref={scrollViewRef} className="flex-1" style={{ zIndex: 1, backgroundColor: '#09090b' }} onScrollBeginDrag={stopAutoScroll} scrollEventThrottle={16} contentContainerStyle={{ paddingBottom: 150 }}>
+      {/* ВИПРАВЛЕНО: Додано перехоплення 4 стадій ручного скролу */}
+      <ScrollView 
+        ref={scrollViewRef} 
+        className="flex-1" 
+        style={{ zIndex: 1, backgroundColor: '#09090b' }} 
+        onScrollBeginDrag={() => { isUserScrolling.current = true; }}
+        onScrollEndDrag={() => { isUserScrolling.current = false; }}
+        onMomentumScrollBegin={() => { isUserScrolling.current = true; }}
+        onMomentumScrollEnd={() => { isUserScrolling.current = false; }}
+        onScroll={(e) => {
+          // Постійно синхронізуємо реальну позицію, щоб при відпусканні пальця таймер продовжив саме звідси
+          scrollY.current = Math.max(0, e.nativeEvent.contentOffset.y);
+        }}
+        scrollEventThrottle={16} 
+        contentContainerStyle={{ paddingBottom: 150 }}
+      >
         <View className="px-5 pt-8 pb-4 bg-[#0a0c10]">
           <Text className="text-3xl font-black text-white uppercase tracking-tighter leading-tight mb-1">{song?.title}</Text>
           <Text className="text-zinc-500 font-bold uppercase tracking-[0.1em] mb-4">{song?.author || "Невідомий автор"}</Text>
@@ -293,7 +314,7 @@ export default function SongViewScreen() {
         </View>
 
         <View className="px-5 pt-4 flex flex-col gap-6">
-          {sections.map((section, idx) => (
+          {sections.map((section: any, idx: number) => (
             <View key={idx} className="bg-[#0a0c10] border border-zinc-900 p-8 rounded-[40px] shadow-2xl">
               <View className="flex-row items-center gap-4 mb-8">
                 <Text className="text-blue-500 text-[14px] font-black uppercase tracking-[0.5em] italic">{section.type}</Text>
