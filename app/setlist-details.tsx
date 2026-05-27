@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import Slider from '@react-native-community/slider';
-import { Stack, router, useLocalSearchParams } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
+import { Stack, router, useLocalSearchParams, useNavigation } from 'expo-router';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'; // Добавлен useLayoutEffect
 import { ActivityIndicator, FlatList, LayoutAnimation, LogBox, Platform, Text, TouchableOpacity, UIManager, View } from 'react-native';
 import YoutubePlayer from "react-native-youtube-iframe";
 import { supabase } from '../lib/supabase';
@@ -19,6 +19,7 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 
 export default function SetlistDetailsScreen() {
   const params = useLocalSearchParams();
+  const navigation = useNavigation(); // Добавлено
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const rawTitle = Array.isArray(params.title) ? params.title[0] : params.title;
   
@@ -35,6 +36,21 @@ export default function SetlistDetailsScreen() {
   const [isScrubbing, setIsScrubbing] = useState(false);
   
   const playerRef = useRef<any>(null);
+
+  // ИСПРАВЛЕННЫЙ ХЕДЕР: используем useLayoutEffect для моментальной привязки кнопки
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <View style={{ flexDirection: 'row', gap: 15, marginRight: 10 }}>
+          <TouchableOpacity 
+            onPress={() => router.push({ pathname: '/edit-setlist-modal', params: { id: id as string } })}
+          >
+            <Ionicons name="create" size={24} color="#3b82f6" />
+          </TouchableOpacity>
+        </View>
+      ),
+    });
+  }, [navigation, id]);
 
   useEffect(() => {
     if (id) fetchSongs();
@@ -82,11 +98,9 @@ export default function SetlistDetailsScreen() {
 
     if (activeSongId === song.id) {
       if (isPlaying) {
-        // ЯДЕРНА ПАУЗА: Просто вимикаємо isPlaying. Плеєр ЗНИЩИТЬСЯ, звук обірветься миттєво.
         setIsPlaying(false);
         setPlayerStatus("paused"); 
       } else {
-        // Знімаємо з паузи: плеєр створиться заново
         setIsPlaying(true);
         setPlayerStatus("buffering");
       }
@@ -115,7 +129,6 @@ export default function SetlistDetailsScreen() {
 
     return (
       <View className="bg-zinc-800 p-5 rounded-[32px] mb-4 border border-zinc-700/50">
-        
         <View className="flex-row items-center">
           <TouchableOpacity 
             onPress={() => router.push({ pathname: '/song-view', params: { id: item.id, source: 'setlist' } } as any)}
@@ -172,7 +185,6 @@ export default function SetlistDetailsScreen() {
                 if (isPlaying) {
                   playerRef.current?.seekTo(val, true);
                 } else {
-                  // Якщо перемотали на паузі, просто зберігаємо час
                   setCurrentTime(val);
                 }
               }}
@@ -202,21 +214,14 @@ export default function SetlistDetailsScreen() {
         headerShadowVisible: false,
       }} />
 
-      {/* 
-        СЛОЙ 0: ВІДЕОПЛЕЄР
-        УВАГА: Плеєр рендериться ТІЛЬКИ коли isPlaying === true.
-        Коли ти натискаєш Паузу, цей блок зникає, забираючи з собою звук!
-      */}
       {activeVideoId && isPlaying && (
         <View style={{ position: 'absolute', top: 50, left: 0, right: 0, height: 300, zIndex: 0 }} pointerEvents="none">
           <YoutubePlayer
             ref={playerRef}
             height={300}
             videoId={activeVideoId}
-            play={true} // Завжди true, коли змонтовано
+            play={true}
             onReady={() => {
-              // МАГІЯ ВІДНОВЛЕННЯ:
-              // Коли плеєр створюється після паузи, він відразу стрибає на збережений час
               if (currentTime > 0) {
                 playerRef.current?.seekTo(currentTime, true);
               } else {
@@ -235,7 +240,7 @@ export default function SetlistDetailsScreen() {
               mediaPlaybackRequiresUserAction: false, 
             }}
             initialPlayerVars={{
-              autoplay: 1, // Дозволяємо автоплей при створенні
+              autoplay: 1,
               controls: 0,
               modestbranding: 1,
               playsinline: 1,
@@ -245,7 +250,6 @@ export default function SetlistDetailsScreen() {
         </View>
       )}
 
-      {/* СЛОЙ 1: ІНТЕРФЕЙС, ЩО ПЕРЕКРИВАЄ ВІДЕО */}
       <View style={{ flex: 1, backgroundColor: '#111', zIndex: 1 }}>
         {loading ? (
           <View className="flex-1 justify-center items-center">
