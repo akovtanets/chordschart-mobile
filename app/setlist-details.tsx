@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import Slider from '@react-native-community/slider';
 import { Stack, router, useLocalSearchParams, useNavigation } from 'expo-router';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'; // Добавлен useLayoutEffect
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, LayoutAnimation, LogBox, Platform, Text, TouchableOpacity, UIManager, View } from 'react-native';
 import YoutubePlayer from "react-native-youtube-iframe";
 import { supabase } from '../lib/supabase';
@@ -19,7 +19,7 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 
 export default function SetlistDetailsScreen() {
   const params = useLocalSearchParams();
-  const navigation = useNavigation(); // Добавлено
+  const navigation = useNavigation();
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const rawTitle = Array.isArray(params.title) ? params.title[0] : params.title;
   
@@ -37,7 +37,6 @@ export default function SetlistDetailsScreen() {
   
   const playerRef = useRef<any>(null);
 
-  // ИСПРАВЛЕННЫЙ ХЕДЕР: используем useLayoutEffect для моментальной привязки кнопки
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
@@ -56,8 +55,10 @@ export default function SetlistDetailsScreen() {
     if (id) fetchSongs();
   }, [id]);
 
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
+useEffect(() => {
+    // ВМЕСТО NodeJS.Timeout пишем ReturnType<typeof setInterval> или просто any
+    let interval: ReturnType<typeof setInterval>; 
+    
     if (isPlaying && !isScrubbing && playerStatus === "playing") {
       interval = setInterval(async () => {
         try {
@@ -131,7 +132,8 @@ export default function SetlistDetailsScreen() {
       <View className="bg-zinc-800 p-5 rounded-[32px] mb-4 border border-zinc-700/50">
         <View className="flex-row items-center">
           <TouchableOpacity 
-            onPress={() => router.push({ pathname: '/song-view', params: { id: item.id, source: 'setlist' } } as any)}
+            // ИЗМЕНЕНО: Добавлен setlistId: id для передачи контекста в song-view
+            onPress={() => router.push({ pathname: '/song-view', params: { id: item.id, source: 'setlist', setlistId: id as string } } as any)}
             className="flex-1 mr-4"
           >
             <Text className={`text-xl font-black uppercase italic tracking-tighter leading-tight ${isCurrentActive ? 'text-blue-400' : 'text-white'}`}>

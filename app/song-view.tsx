@@ -1,8 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
 import Slider from '@react-native-community/slider';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, LayoutAnimation, LogBox, Platform, ScrollView, Text, TouchableOpacity, UIManager, View } from 'react-native';
+import { ActivityIndicator, LayoutAnimation, LogBox, PanResponder, Platform, ScrollView, Text, TouchableOpacity, UIManager, View } from 'react-native';
 import YoutubePlayer from "react-native-youtube-iframe";
 import { supabase } from '../lib/supabase';
 
@@ -18,6 +18,7 @@ export default function SongViewScreen() {
   const params = useLocalSearchParams();
   const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const source = Array.isArray(params.source) ? params.source[0] : params.source;
+  const setlistId = Array.isArray(params.setlistId) ? params.setlistId[0] : params.setlistId; 
   
   const isFromSetlist = source === 'setlist';
 
@@ -35,23 +36,95 @@ export default function SongViewScreen() {
   const [playerStatus, setPlayerStatus] = useState("unstarted");
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+
+  const [prevSongId, setPrevSongId] = useState<string | null>(null);
+  const [nextSongId, setNextSongId] = useState<string | null>(null);
   
   const scrollViewRef = useRef<ScrollView>(null);
   const scrollY = useRef(0);
-  const autoScrollInterval = useRef<NodeJS.Timeout | null>(null);
+  const autoScrollInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const playerRef = useRef<any>(null);
-  const isUserScrolling = useRef(false); // ДОДАНО: Слідкує, чи користувач зараз гортає пальцем
+  const isUserScrolling = useRef(false);
+
+  const prevIdRef = useRef(prevSongId);
+  const nextIdRef = useRef(nextSongId);
+
+  useEffect(() => { prevIdRef.current = prevSongId; }, [prevSongId]);
+  useEffect(() => { nextIdRef.current = nextSongId; }, [nextSongId]);
 
   useEffect(() => {
-    if (id) fetchSong();
+    if (id) {
+      fetchSong();
+      if (isFromSetlist && setlistId) fetchSetlistContext();
+    }
     return () => {
       stopAutoScroll();
       setIsPlaying(false);
     };
-  }, [id]);
+  }, [id, setlistId]);
+
+  async function fetchSetlistContext() {
+    try {
+      const { data } = await supabase.from('setlists').select('song_ids').eq('id', setlistId).single();
+      if (data?.song_ids) {
+        const ids = data.song_ids;
+        const currentIndex = ids.findIndex((sId: any) => String(sId) === String(id));
+        if (currentIndex > 0) setPrevSongId(ids[currentIndex - 1]);
+        else setPrevSongId(null);
+        
+        if (currentIndex >= 0 && currentIndex < ids.length - 1) setNextSongId(ids[currentIndex + 1]);
+        else setNextSongId(null);
+      }
+    } catch (e) {
+      console.error("Error fetching setlist context:", e);
+    }
+  }
+
+  const goToSong = (targetId: string | null) => {
+    if (!targetId) return;
+    stopAutoScroll();
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setDuration(0);
+    
+    scrollViewRef.current?.scrollTo({ y: 0, animated: false });
+    scrollY.current = 0;
+
+    router.setParams({ id: targetId });
+  };
+
+  const handleLeftButtonPress = () => {
+    if (prevIdRef.current) {
+      goToSong(prevIdRef.current);
+    } else {
+      router.back();
+    }
+  };
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: (evt, gestureState) => {
+        const isHorizontal = Math.abs(gestureState.dx) > 30 && Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.5;
+        return isHorizontal;
+      },
+      onPanResponderRelease: (evt, gestureState) => {
+        if (gestureState.dx > 40) {
+          if (prevIdRef.current) {
+            goToSong(prevIdRef.current);
+          }
+        } else if (gestureState.dx < -40) {
+          if (nextIdRef.current) {
+            goToSong(nextIdRef.current);
+          }
+        }
+      },
+    })
+  ).current;
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
+    let interval: ReturnType<typeof setInterval>;
     if (isPlaying && playerStatus === "playing") {
       interval = setInterval(async () => {
         try {
@@ -83,19 +156,15 @@ export default function SongViewScreen() {
     setIsSettingsOpen(!isSettingsOpen);
   };
 
-  // --- ЛОГІКА РОЗУМНОГО АВТОСКРОЛУ (Прискорено на 35% + Без зупинки при торканні) ---
   const toggleAutoScroll = () => {
     if (isAutoScrolling) {
       stopAutoScroll();
     } else {
       setIsAutoScrolling(true);
-      
       const bpm = song?.bpm ? parseInt(song.bpm) : 120;
-      
       const intervalMs = Math.max(12, (60000 / (bpm * 30.3))); 
 
       autoScrollInterval.current = setInterval(() => {
-        // ДОДАНО: Скролимо тільки якщо користувач зараз не тримає палець на екрані
         if (!isUserScrolling.current) {
           scrollY.current += 0.5; 
           scrollViewRef.current?.scrollTo({ y: scrollY.current, animated: false });
@@ -168,7 +237,6 @@ export default function SongViewScreen() {
   if (loading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#09090b' }}>
-         <Stack.Screen options={{ title: 'Завантаження...' }} />
          <ActivityIndicator size="large" color="#3b82f6" />
       </View>
     );
@@ -194,27 +262,57 @@ export default function SongViewScreen() {
   const videoId = song?.youtube_url?.match(/(?:youtu\.be\/|youtube\.com\/(?:.*vExternal\/|v\/|u\/\w\/|embed\/|watch\?v=))([^#\&\?]*)/)?.[1];
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#09090b' }}>
-      <Stack.Screen options={{ headerShown: true, title: song?.title?.toUpperCase(), headerStyle: { backgroundColor: '#18181b' }, headerTintColor: '#fff', headerBackTitle: "Назад", headerShadowVisible: false }} />
+    <View style={{ flex: 1, backgroundColor: '#09090b' }} {...panResponder.panHandlers}>
+      {/* Динамически отключаем нативные жесты для этого экрана */}
+      <Stack.Screen options={{ headerShown: false, gestureEnabled: false }} />
 
-      {isFromSetlist && (
-        <View className="px-4 py-4 flex-row items-center justify-between border-b border-zinc-800/50 bg-blue-900/10">
-          <View className="flex-row items-center gap-3">
-            <TouchableOpacity onPress={() => setFontSizeLevel(prev => Math.max(prev - 1, 0))} className="w-14 h-14 items-center justify-center bg-blue-900/40 rounded-full border border-blue-800/50">
-              <Text className="text-blue-300 font-black text-2xl">A-</Text>
+      {/* Наша кастомная шапка */}
+      <View className="pt-12 pb-3 px-4 bg-[#18181b] flex-row items-center justify-between border-b border-zinc-800">
+        <TouchableOpacity 
+          onPress={handleLeftButtonPress}
+          className="flex-row items-center py-2 pr-4"
+        >
+          <Ionicons name={prevSongId ? "chevron-back" : "arrow-back"} size={24} color="#3b82f6" />
+          <Text className="text-white font-bold ml-1 text-base">{prevSongId ? "Назад" : "Список"}</Text>
+        </TouchableOpacity>
+
+        <Text numberOfLines={1} className="text-white font-black text-sm uppercase tracking-wider flex-1 text-center mx-2">
+          {song?.title}
+        </Text>
+
+        {isFromSetlist ? (
+          <View className="flex-row items-center gap-2">
+            <TouchableOpacity onPress={() => goToSong(prevSongId)} disabled={!prevSongId} style={{ opacity: prevSongId ? 1 : 0.3 }} className="p-2">
+              <Ionicons name="chevron-back" size={24} color="#3b82f6" />
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => setFontSizeLevel(prev => Math.min(prev + 1, 2))} className="w-14 h-14 items-center justify-center bg-blue-900/40 rounded-full border border-blue-800/50">
-              <Text className="text-blue-300 font-black text-2xl">A+</Text>
+            <TouchableOpacity onPress={() => goToSong(nextSongId)} disabled={!nextSongId} style={{ opacity: nextSongId ? 1 : 0.3 }} className="p-2">
+              <Ionicons name="chevron-forward" size={24} color="#3b82f6" />
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={{ width: 40 }} />
+        )}
+      </View>
+
+      {/* Панель плеера и автоскролла */}
+      {isFromSetlist && (
+        <View className="px-4 py-3 flex-row items-center justify-between border-b border-zinc-800/50 bg-blue-900/10">
+          <View className="flex-row items-center gap-3">
+            <TouchableOpacity onPress={() => setFontSizeLevel(prev => Math.max(prev - 1, 0))} className="w-12 h-12 items-center justify-center bg-blue-900/40 rounded-full border border-blue-800/50">
+              <Text className="text-blue-300 font-black text-xl">A-</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setFontSizeLevel(prev => Math.min(prev + 1, 2))} className="w-12 h-12 items-center justify-center bg-blue-900/40 rounded-full border border-blue-800/50">
+              <Text className="text-blue-300 font-black text-xl">A+</Text>
             </TouchableOpacity>
           </View>
 
           {videoId && (
-            <View className="flex-1 mx-4 flex-row items-center bg-black/60 rounded-full h-14 px-5 border border-blue-900/30">
-              <TouchableOpacity onPress={handleTogglePlay} className="w-10 h-10 items-center justify-center bg-blue-600 rounded-full">
-                {playerStatus === "buffering" ? <ActivityIndicator size="small" color="white" /> : <Ionicons name={isPlaying ? "pause" : "play"} size={20} color="white" />}
+            <View className="flex-1 mx-3 flex-row items-center bg-black/60 rounded-full h-12 px-4 border border-blue-900/30">
+              <TouchableOpacity onPress={handleTogglePlay} className="w-9 h-9 items-center justify-center bg-blue-600 rounded-full">
+                {playerStatus === "buffering" ? <ActivityIndicator size="small" color="white" /> : <Ionicons name={isPlaying ? "pause" : "play"} size={18} color="white" />}
               </TouchableOpacity>
               <Slider
-                style={{ flex: 1, height: 40, marginLeft: 12 }}
+                style={{ flex: 1, height: 40, marginLeft: 8 }}
                 minimumValue={0}
                 maximumValue={duration > 0 ? duration : 100}
                 value={currentTime}
@@ -229,9 +327,9 @@ export default function SongViewScreen() {
             </View>
           )}
 
-          <TouchableOpacity onPress={toggleAutoScroll} className={`w-24 h-14 rounded-3xl flex-col items-center justify-center border ${isAutoScrolling ? 'bg-blue-600 border-blue-500' : 'bg-blue-900/40 border-blue-800/50'}`}>
-            <Ionicons name={isAutoScrolling ? "pause" : "chevron-down"} size={20} color={isAutoScrolling ? "white" : "#93c5fd"} />
-            <Text className={`font-black text-[9px] uppercase tracking-tighter ${isAutoScrolling ? 'text-white' : 'text-blue-300'}`}>{isAutoScrolling ? 'Стоп' : 'Скролл'}</Text>
+          <TouchableOpacity onPress={toggleAutoScroll} className={`w-20 h-12 rounded-2xl flex-col items-center justify-center border ${isAutoScrolling ? 'bg-blue-600 border-blue-500' : 'bg-blue-900/40 border-blue-800/50'}`}>
+            <Ionicons name={isAutoScrolling ? "pause" : "chevron-down"} size={18} color={isAutoScrolling ? "white" : "#93c5fd"} />
+            <Text className={`font-black text-[8px] uppercase tracking-tighter ${isAutoScrolling ? 'text-white' : 'text-blue-300'}`}>{isAutoScrolling ? 'Стоп' : 'Скролл'}</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -251,17 +349,17 @@ export default function SongViewScreen() {
         </View>
       )}
 
-      {/* ВИПРАВЛЕНО: Додано перехоплення 4 стадій ручного скролу */}
+      {/* Текст песни */}
       <ScrollView 
         ref={scrollViewRef} 
         className="flex-1" 
+        scrollEnabled={true}
         style={{ zIndex: 1, backgroundColor: '#09090b' }} 
         onScrollBeginDrag={() => { isUserScrolling.current = true; }}
         onScrollEndDrag={() => { isUserScrolling.current = false; }}
         onMomentumScrollBegin={() => { isUserScrolling.current = true; }}
         onMomentumScrollEnd={() => { isUserScrolling.current = false; }}
         onScroll={(e) => {
-          // Постійно синхронізуємо реальну позицію, щоб при відпусканні пальця таймер продовжив саме звідси
           scrollY.current = Math.max(0, e.nativeEvent.contentOffset.y);
         }}
         scrollEventThrottle={16} 

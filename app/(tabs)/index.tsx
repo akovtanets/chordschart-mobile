@@ -106,23 +106,28 @@ export default function SetlistsScreen() {
     }
   };
 
-  const markedDates = useMemo(() => {
+const markedDates = useMemo(() => {
     const marks: any = {};
     allSetlists.forEach(item => {
-      const match = item.title?.match(/(\d{1,2})\.(\d{2})\.(\d{4})/);
-      if (match) {
-        const isoDate = `${match[3]}-${match[2]}-${match[1].padStart(2, '0')}`;
-        marks[isoDate] = { marked: true, dotColor: '#0090ff' };
+      // ИСПОЛЬЗУЕМ created_at ВМЕСТО title
+      // Если у тебя колонка называется не created_at, а date, поменяй здесь:
+      if (item.created_at) { 
+        const dateOnly = item.created_at.split('T')[0]; // Получаем '2026-10-14'
+        marks[dateOnly] = { marked: true, dotColor: '#0090ff' };
       }
     });
+    // Добавляем стиль для выбранной даты
     marks[selectedDate] = { ...marks[selectedDate], selected: true, selectedColor: '#0090ff' };
     return marks;
   }, [allSetlists, selectedDate]);
 
   useEffect(() => {
-    const [y, m, d] = selectedDate.split('-');
-    const searchStr = `${parseInt(d)}.${m}.${y}`;
-    const filtered = allSetlists.filter(item => item.title?.includes(searchStr));
+    // ФИЛЬТРУЕМ ПО created_at ВМЕСТО title
+    const filtered = allSetlists.filter(item => {
+      if (!item.created_at) return false;
+      const dateOnly = item.created_at.split('T')[0];
+      return dateOnly === selectedDate;
+    });
     setFilteredSetlists(filtered);
   }, [selectedDate, allSetlists]);
 
