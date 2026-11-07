@@ -40,7 +40,9 @@ export default function SongViewScreen() {
   const [prevSongId, setPrevSongId] = useState<string | null>(null);
   const [nextSongId, setNextSongId] = useState<string | null>(null);
   
-  const scrollViewRef = useRef<ScrollView>(null);
+  // ИСПРАВЛЕНИЕ ТИПИЗАЦИИ: установлен тип any, чтобы TypeScript не блокировал вызов .scrollTo()
+  const scrollViewRef = useRef<any>(null);
+  
   const scrollY = useRef(0);
   const autoScrollInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const playerRef = useRef<any>(null);
@@ -199,7 +201,12 @@ export default function SongViewScreen() {
     });
   };
 
-  const renderLineContent = (line: string) => {
+const renderLineContent = (line: string) => {
+    // Перевіряємо, чи складається рядок ТІЛЬКИ з акордів та розділювачів (| - /)
+    const textWithoutChords = line.replace(/\[.*?\]/g, '').trim();
+    const isChordsOnlyLine = line.trim().length > 0 && 
+      (textWithoutChords.length === 0 || /^[\s\|\-\/]+$/.test(textWithoutChords));
+
     const parts = line.split(/(\[.*?\])/g);
     const fontSizes = [14, 18, 22];
     const chordSizes = [12, 16, 20];
@@ -211,6 +218,31 @@ export default function SongViewScreen() {
     const currentMargin = margins[fontSizeLevel];
     const currentOffset = chordOffsets[fontSizeLevel];
 
+    // Якщо це рядок тільки з акордами та розділювачами (наприклад, ВСТУП)
+    if (isChordsOnlyLine) {
+      return (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 8, marginBottom: currentMargin }}>
+          {parts.map((part, i) => {
+            if (part.startsWith('[') && part.endsWith(']')) {
+              const chord = transposeChord(part.slice(1, -1), semitones, capo);
+              return (
+                <Text key={i} style={{ color: '#3b82f6', fontWeight: '900', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: currentChord }}>
+                  {chord}
+                </Text>
+              );
+            }
+            // Розділювачі рендеримо тим самим кольором і шрифтом у той самий рядок
+            return (
+              <Text key={i} style={{ color: '#3b82f6', fontWeight: '900', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: currentChord }}>
+                {part}
+              </Text>
+            );
+          })}
+        </View>
+      );
+    }
+
+    // Твій оригінальний код для рядків, де є текст пісні
     return (
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: line.trim().startsWith('[') ? 24 : 4, marginBottom: currentMargin }}>
         {parts.map((part, i) => {
@@ -268,18 +300,22 @@ export default function SongViewScreen() {
 
       {/* Наша кастомная шапка */}
       <View className="pt-12 pb-3 px-4 bg-[#18181b] flex-row items-center justify-between border-b border-zinc-800">
+        
+        {/* ЛЕВАЯ КНОПКА: Теперь всегда "Список" и всегда возвращает назад (router.back) */}
         <TouchableOpacity 
-          onPress={handleLeftButtonPress}
+          onPress={() => router.back()} // Завжди повертаємось на попередній екран
           className="flex-row items-center py-2 pr-4"
         >
-          <Ionicons name={prevSongId ? "chevron-back" : "arrow-back"} size={24} color="#3b82f6" />
-          <Text className="text-white font-bold ml-1 text-base">{prevSongId ? "Назад" : "Список"}</Text>
+          <Ionicons name="arrow-back" size={24} color="#3b82f6" />
+          <Text className="text-white font-bold ml-1 text-base">Список</Text>
         </TouchableOpacity>
 
+        {/* НАЗВАНИЕ ПЕСНИ ПО ЦЕНТРУ */}
         <Text numberOfLines={1} className="text-white font-black text-sm uppercase tracking-wider flex-1 text-center mx-2">
           {song?.title}
         </Text>
 
+        {/* ПРАВЫЕ КНОПКИ: Стрелки для переключения песен (показываются только если это сетлист) */}
         {isFromSetlist ? (
           <View className="flex-row items-center gap-2">
             <TouchableOpacity onPress={() => goToSong(prevSongId)} disabled={!prevSongId} style={{ opacity: prevSongId ? 1 : 0.3 }} className="p-2">
@@ -290,7 +326,7 @@ export default function SongViewScreen() {
             </TouchableOpacity>
           </View>
         ) : (
-          <View style={{ width: 40 }} />
+          <View style={{ width: 40 }} /> // Пустий блок для вирівнювання центру, якщо не з сетліста
         )}
       </View>
 
