@@ -3,6 +3,7 @@ import Slider from '@react-native-community/slider';
 import { router, Stack, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, LayoutAnimation, LogBox, PanResponder, Platform, ScrollView, Text, TouchableOpacity, UIManager, View } from 'react-native';
+import { WebView } from 'react-native-webview';
 import YoutubePlayer from "react-native-youtube-iframe";
 import { supabase } from '../lib/supabase';
 
@@ -13,6 +14,134 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 }
 
 LogBox.ignoreLogs(['[Reanimated]']);
+
+// --- HTML-код движка Web Audio API з підтримкою пульсації та активації аудіо ---
+const METRONOME_ENGINE_HTML = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+  <script>
+    let audioCtx = null;
+    let isPlaying = false;
+    let nextNoteTime = 0.0;
+    let current16thNote = 0;
+    let lookahead = 25.0;
+    let scheduleAheadTime = 0.1;
+    let timerID = null;
+
+    let bpm = 120;
+    let beatsPerMeasure = 4;
+    let vols = { master: 0.8, accent: 1, q14: 0.8, q18: 0, q116: 0 };
+    let solo = { click: false, accent: false, q14: false, q18: false, q116: false };
+
+    function initAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+
+    function nextNote() {
+      const secondsPerBeat = 60.0 / bpm;
+      nextNoteTime += 0.25 * secondsPerBeat;
+      current16thNote++;
+      if (current16thNote === beatsPerMeasure * 4) {
+        current16thNote = 0;
+      }
+    }
+
+    function scheduleNote(beatNumber, time) {
+      if (!vols) return;
+      
+      let channel = 'q116';
+      let freq = 400; 
+      
+      if (beatNumber === 0) { channel = 'accent'; freq = 1200; } 
+      else if (beatNumber % 4 === 0) { channel = 'q14'; freq = 800; } 
+      else if (beatNumber % 2 === 0) { channel = 'q18'; freq = 600; } 
+
+      const isAnySolo = solo.click || solo.accent || solo.q14 || solo.q18 || solo.q116;
+      const isMuted = isAnySolo && !solo[channel] && !solo.click;
+      
+      if (!isMuted) {
+        const masterVol = vols.master;
+        const chanVol = vols[channel];
+        const finalVol = masterVol * chanVol;
+
+        if (finalVol > 0 && audioCtx) {
+          const osc = audioCtx.createOscillator();
+          const gainNode = audioCtx.createGain();
+          
+          osc.type = 'sine';
+          osc.frequency.value = freq;
+          
+          gainNode.gain.setValueAtTime(finalVol, time);
+          gainNode.gain.exponentialRampToValueAtTime(0.001, time + 0.05); 
+          
+          osc.connect(gainNode);
+          gainNode.connect(audioCtx.destination);
+          
+          osc.start(time);
+          osc.stop(time + 0.05);
+        }
+      }
+
+      // Відправляємо сигнал пульсації в React Native на кожну чверть (або акцент)
+      if (beatNumber % 4 === 0) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'PULSE', isAccent: beatNumber === 0 }));
+      }
+    }
+
+    function scheduler() {
+      while (nextNoteTime < audioCtx.currentTime + scheduleAheadTime) {
+        scheduleNote(current16thNote, nextNoteTime);
+        nextNote();
+      }
+      timerID = setTimeout(scheduler, lookahead);
+    }
+
+    const handleMessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'STATE') {
+          initAudio();
+          bpm = data.bpm || 120;
+          beatsPerMeasure = data.timesig || 4;
+          
+          vols = {
+            master: data.volumes.click / 100,
+            accent: data.volumes.accent / 100,
+            q14: data.volumes.q14 / 100,
+            q18: data.volumes.q18 / 100,
+            q116: data.volumes.q116 / 100
+          };
+          solo = data.solo;
+
+          if (data.playing !== isPlaying) {
+            isPlaying = data.playing;
+            if (isPlaying) {
+              current16thNote = 0;
+              nextNoteTime = audioCtx.currentTime + 0.05;
+              scheduler();
+            } else {
+              clearTimeout(timerID);
+            }
+          }
+        }
+      } catch(e) {}
+    };
+
+    window.addEventListener("message", handleMessage);
+    document.addEventListener("message", handleMessage);
+  </script>
+</body>
+</html>
+`;
 
 export default function SongViewScreen() {
   const params = useLocalSearchParams();
@@ -40,13 +169,24 @@ export default function SongViewScreen() {
   const [prevSongId, setPrevSongId] = useState<string | null>(null);
   const [nextSongId, setNextSongId] = useState<string | null>(null);
   
-  // ИСПРАВЛЕНИЕ ТИПИЗАЦИИ: установлен тип any, чтобы TypeScript не блокировал вызов .scrollTo()
-  const scrollViewRef = useRef<any>(null);
+  const [isClickActive, setIsClickActive] = useState(false);
+  const [isMixerOpen, setIsMixerOpen] = useState(false);
+  const [beatPulse, setBeatPulse] = useState(false); // Стан для пульсації кнопки
   
+  const [mixerVolumes, setMixerVolumes] = useState({
+    click: 80, accent: 100, q14: 80, q18: 0, q116: 0
+  });
+
+  const [soloChannels, setSoloChannels] = useState({
+    click: false, accent: false, q14: false, q18: false, q116: false
+  });
+
+  const scrollViewRef = useRef<any>(null);
   const scrollY = useRef(0);
   const autoScrollInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const playerRef = useRef<any>(null);
   const isUserScrolling = useRef(false);
+  const webViewRef = useRef<any>(null); 
 
   const prevIdRef = useRef(prevSongId);
   const nextIdRef = useRef(nextSongId);
@@ -62,8 +202,39 @@ export default function SongViewScreen() {
     return () => {
       stopAutoScroll();
       setIsPlaying(false);
+      setIsClickActive(false);
     };
   }, [id, setlistId]);
+
+  // Синхронізація стейтів з WebView
+  useEffect(() => {
+    if (webViewRef.current) {
+      const timesig = song?.timesig ? parseInt(song.timesig.split('/')[0]) : 4;
+      const bpm = song?.bpm ? parseInt(song.bpm) : 120;
+      
+      const payload = JSON.stringify({
+        type: 'STATE',
+        playing: isClickActive,
+        bpm: bpm,
+        timesig: timesig,
+        volumes: mixerVolumes,
+        solo: soloChannels
+      });
+
+      webViewRef.current.postMessage(payload);
+    }
+  }, [isClickActive, mixerVolumes, soloChannels, song]);
+
+  // Отримання повідомлень про пульсацію від WebView движка
+  const handleWebViewMessage = (event: any) => {
+    try {
+      const data = JSON.parse(event.nativeEvent.data);
+      if (data.type === 'PULSE') {
+        setBeatPulse(true);
+        setTimeout(() => setBeatPulse(false), 80); // Швидкий спалах на кожен удар
+      }
+    } catch (e) {}
+  };
 
   async function fetchSetlistContext() {
     try {
@@ -86,6 +257,7 @@ export default function SongViewScreen() {
     if (!targetId) return;
     stopAutoScroll();
     setIsPlaying(false);
+    setIsClickActive(false); 
     setCurrentTime(0);
     setDuration(0);
     
@@ -93,14 +265,6 @@ export default function SongViewScreen() {
     scrollY.current = 0;
 
     router.setParams({ id: targetId });
-  };
-
-  const handleLeftButtonPress = () => {
-    if (prevIdRef.current) {
-      goToSong(prevIdRef.current);
-    } else {
-      router.back();
-    }
   };
 
   const panResponder = useRef(
@@ -113,13 +277,9 @@ export default function SongViewScreen() {
       },
       onPanResponderRelease: (evt, gestureState) => {
         if (gestureState.dx > 40) {
-          if (prevIdRef.current) {
-            goToSong(prevIdRef.current);
-          }
+          if (prevIdRef.current) goToSong(prevIdRef.current);
         } else if (gestureState.dx < -40) {
-          if (nextIdRef.current) {
-            goToSong(nextIdRef.current);
-          }
+          if (nextIdRef.current) goToSong(nextIdRef.current);
         }
       },
     })
@@ -201,8 +361,7 @@ export default function SongViewScreen() {
     });
   };
 
-const renderLineContent = (line: string) => {
-    // Перевіряємо, чи складається рядок ТІЛЬКИ з акордів та розділювачів (| - /)
+  const renderLineContent = (line: string) => {
     const textWithoutChords = line.replace(/\[.*?\]/g, '').trim();
     const isChordsOnlyLine = line.trim().length > 0 && 
       (textWithoutChords.length === 0 || /^[\s\|\-\/]+$/.test(textWithoutChords));
@@ -218,7 +377,6 @@ const renderLineContent = (line: string) => {
     const currentMargin = margins[fontSizeLevel];
     const currentOffset = chordOffsets[fontSizeLevel];
 
-    // Якщо це рядок тільки з акордами та розділювачами (наприклад, ВСТУП)
     if (isChordsOnlyLine) {
       return (
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 8, marginBottom: currentMargin }}>
@@ -231,7 +389,6 @@ const renderLineContent = (line: string) => {
                 </Text>
               );
             }
-            // Розділювачі рендеримо тим самим кольором і шрифтом у той самий рядок
             return (
               <Text key={i} style={{ color: '#3b82f6', fontWeight: '900', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace', fontSize: currentChord }}>
                 {part}
@@ -242,7 +399,6 @@ const renderLineContent = (line: string) => {
       );
     }
 
-    // Твій оригінальний код для рядків, де є текст пісні
     return (
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: line.trim().startsWith('[') ? 24 : 4, marginBottom: currentMargin }}>
         {parts.map((part, i) => {
@@ -295,27 +451,18 @@ const renderLineContent = (line: string) => {
 
   return (
     <View style={{ flex: 1, backgroundColor: '#09090b' }} {...panResponder.panHandlers}>
-      {/* Динамически отключаем нативные жесты для этого экрана */}
       <Stack.Screen options={{ headerShown: false, gestureEnabled: false }} />
 
-      {/* Наша кастомная шапка */}
       <View className="pt-12 pb-3 px-4 bg-[#18181b] flex-row items-center justify-between border-b border-zinc-800">
-        
-        {/* ЛЕВАЯ КНОПКА: Теперь всегда "Список" и всегда возвращает назад (router.back) */}
-        <TouchableOpacity 
-          onPress={() => router.back()} // Завжди повертаємось на попередній екран
-          className="flex-row items-center py-2 pr-4"
-        >
+        <TouchableOpacity onPress={() => router.back()} className="flex-row items-center py-2 pr-4">
           <Ionicons name="arrow-back" size={24} color="#3b82f6" />
           <Text className="text-white font-bold ml-1 text-base">Список</Text>
         </TouchableOpacity>
 
-        {/* НАЗВАНИЕ ПЕСНИ ПО ЦЕНТРУ */}
         <Text numberOfLines={1} className="text-white font-black text-sm uppercase tracking-wider flex-1 text-center mx-2">
           {song?.title}
         </Text>
 
-        {/* ПРАВЫЕ КНОПКИ: Стрелки для переключения песен (показываются только если это сетлист) */}
         {isFromSetlist ? (
           <View className="flex-row items-center gap-2">
             <TouchableOpacity onPress={() => goToSong(prevSongId)} disabled={!prevSongId} style={{ opacity: prevSongId ? 1 : 0.3 }} className="p-2">
@@ -326,11 +473,10 @@ const renderLineContent = (line: string) => {
             </TouchableOpacity>
           </View>
         ) : (
-          <View style={{ width: 40 }} /> // Пустий блок для вирівнювання центру, якщо не з сетліста
+          <View style={{ width: 40 }} />
         )}
       </View>
 
-      {/* Панель плеера и автоскролла */}
       {isFromSetlist && (
         <View className="px-4 py-3 flex-row items-center justify-between border-b border-zinc-800/50 bg-blue-900/10">
           <View className="flex-row items-center gap-3">
@@ -370,6 +516,40 @@ const renderLineContent = (line: string) => {
         </View>
       )}
 
+      {/* ПАНЕЛЬ КЕРУВАННЯ МЕТРОНОМОМ З ПУЛЬСАЦІЄЮ КНОПКИ */}
+      {isFromSetlist && (
+        <View className="px-4 py-2.5 bg-[#0d0d0f] border-b border-zinc-800/80 flex-row items-center justify-between">
+          <View className="flex-row items-center gap-2">
+            <Ionicons name="pulse" size={18} color={isClickActive ? (beatPulse ? "#ef4444" : "#3b82f6") : "#52525b"} />
+            <Text className="text-zinc-400 font-bold text-xs uppercase tracking-wider">Клік: {song?.bpm || 120} BPM</Text>
+          </View>
+
+          <View className="flex-row items-center gap-3">
+            <TouchableOpacity 
+              onPress={() => setIsClickActive(!isClickActive)} 
+              style={{
+                backgroundColor: isClickActive ? (beatPulse ? '#ef4444' : '#2563eb') : '#18181b',
+                borderColor: isClickActive ? '#f87171' : '#27272a',
+                borderWidth: 1, paddingHorizontal: 20, height: 40, borderRadius: 12,
+                flexDirection: 'row', alignItems: 'center', gap: 6
+              }}
+            >
+              <Ionicons name={isClickActive ? "pause" : "play"} size={16} color={isClickActive ? "white" : "#a1a1aa"} />
+              <Text style={{ color: isClickActive ? '#ffffff' : '#a1a1aa', fontWeight: '900', fontSize: 11, textTransform: 'uppercase' }}>
+                {isClickActive ? 'Стоп' : 'Старт'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity 
+              onPress={() => setIsMixerOpen(true)}
+              style={{ backgroundColor: '#18181b', borderColor: '#27272a', borderWidth: 1, width: 40, height: 40, borderRadius: 12, alignItems: 'center', justifyContent: 'center' }}
+            >
+              <Ionicons name="options" size={18} color="#a1a1aa" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {videoId && isPlaying && (
         <View style={{ position: 'absolute', top: 0, left: 0, width: 1, height: 1, opacity: 0.01, zIndex: -1 }}>
           <YoutubePlayer
@@ -385,7 +565,6 @@ const renderLineContent = (line: string) => {
         </View>
       )}
 
-      {/* Текст песни */}
       <ScrollView 
         ref={scrollViewRef} 
         className="flex-1" 
@@ -459,6 +638,84 @@ const renderLineContent = (line: string) => {
           ))}
         </View>
       </ScrollView>
+
+      {/* МОДАЛЬНЕ ВІКНО МІКШЕРА */}
+      {isMixerOpen && (
+        <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 1000, justifyContent: 'center', alignItems: 'center', padding: 20 }}>
+          <View style={{ backgroundColor: '#1c1c1e', borderColor: '#2c2c2e', borderWidth: 1, borderRadius: 24, padding: 20, shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.8, shadowRadius: 20 }}>
+            
+            <TouchableOpacity onPress={() => setIsMixerOpen(false)} style={{ position: 'absolute', top: 16, right: 16, zIndex: 10 }}>
+              <Ionicons name="close-circle" size={28} color="#52525b" />
+            </TouchableOpacity>
+
+            <View style={{ flexDirection: 'row', marginTop: 20 }}>
+              <View style={{ backgroundColor: '#151517', padding: 12, borderRadius: 16, alignItems: 'center', marginRight: 16 }}>
+                <TouchableOpacity 
+                  onPress={() => setSoloChannels(prev => ({...prev, click: !prev.click}))}
+                  style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: soloChannels.click ? '#fbbf24' : '#27272a', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}
+                >
+                  <Text style={{ color: soloChannels.click ? '#000' : '#71717a', fontSize: 12, fontWeight: '900' }}>S</Text>
+                </TouchableOpacity>
+
+                <View style={{ width: 60, height: 220, justifyContent: 'center', alignItems: 'center' }}>
+                  <Slider
+                    style={{ width: 200, height: 40, transform: [{ rotate: '-90deg' }] }}
+                    minimumValue={0} maximumValue={100} value={mixerVolumes.click}
+                    minimumTrackTintColor="#38bdf8" maximumTrackTintColor="#09090b" thumbTintColor="#3f3f46"
+                    onValueChange={(val) => setMixerVolumes(prev => ({ ...prev, click: Math.round(val) }))}
+                  />
+                </View>
+                <Text style={{ color: '#ffffff', fontSize: 12, fontWeight: '900', marginTop: 16 }}>Click</Text>
+              </View>
+
+              <View style={{ backgroundColor: '#1a1a1c', padding: 12, borderRadius: 16, flexDirection: 'row', gap: 12 }}>
+                {( [
+                  { key: 'accent', label: 'Accent' },
+                  { key: 'q14', label: '1/4' },
+                  { key: 'q18', label: '1/8' },
+                  { key: 'q116', label: '1/16' }
+                ] as { key: 'accent' | 'q14' | 'q18' | 'q116'; label: string }[] ).map((col) => (
+                  <View key={col.key} style={{ alignItems: 'center', width: 50 }}>
+                    <TouchableOpacity 
+                      onPress={() => setSoloChannels(prev => ({...prev, [col.key]: !prev[col.key]}))}
+                      style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: soloChannels[col.key] ? '#fbbf24' : '#27272a', alignItems: 'center', justifyContent: 'center', marginBottom: 20 }}
+                    >
+                      <Text style={{ color: soloChannels[col.key] ? '#000' : '#71717a', fontSize: 12, fontWeight: '900' }}>S</Text>
+                    </TouchableOpacity>
+
+                    <View style={{ width: 50, height: 220, justifyContent: 'center', alignItems: 'center' }}>
+                      <Slider
+                        style={{ width: 200, height: 40, transform: [{ rotate: '-90deg' }] }}
+                        minimumValue={0} maximumValue={100} value={mixerVolumes[col.key]}
+                        minimumTrackTintColor="#a1a1aa" maximumTrackTintColor="#09090b" thumbTintColor="#27272a"
+                        onValueChange={(val) => setMixerVolumes(prev => ({ ...prev, [col.key]: Math.round(val) }))}
+                      />
+                    </View>
+                    <Text style={{ color: mixerVolumes[col.key] > 0 ? '#e4e4e7' : '#52525b', fontSize: 11, fontWeight: '800', marginTop: 16 }}>
+                      {col.label}
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            </View>
+          </View>
+        </View>
+      )}
+
+      {/* СХОВАНИЙ WEBVIEW З ОБРОБКОЮ ПОВІДОМЛЕНЬ */}
+      <View style={{ position: 'absolute', width: 0, height: 0, opacity: 0, overflow: 'hidden', zIndex: -100 }}>
+        <WebView 
+          ref={webViewRef}
+          source={{ html: METRONOME_ENGINE_HTML }}
+          javaScriptEnabled={true}
+          originWhitelist={['*']}
+          mediaPlaybackRequiresUserAction={false}
+          onMessage={handleWebViewMessage}
+          style={{ width: 0, height: 0 }}
+          containerStyle={{ width: 0, height: 0 }}
+        />
+      </View>
+
     </View>
   );
 }
